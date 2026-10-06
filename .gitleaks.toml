@@ -1,0 +1,128 @@
+# Global gitleaks config for the pre-commit / pre-push hooks.
+#
+# Extends gitleaks' built-in rules (which already cover AWS, GitHub, Slack,
+# OpenAI, Stripe, private keys, JWTs and ~170 other vendor formats) with rules
+# for the *generic* secret shapes that the defaults miss. Those are the shapes
+# EchoLimits secrets actually take: NAS passwords, Pangolin and Paperclip
+# secrets, webhook secrets, bearer tokens and .env values.
+#
+# A repo may override this file entirely by adding its own .gitleaks.toml.
+# Validate any change with:  ~/.githooks/test-hooks.sh
+
+title = "EchoLimits global gitleaks config"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Placeholder vocabulary reused by the rules below. These are the strings that
+# legitimately appear in runbooks, .env.example files and docs.
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "generic-credential-assignment"
+description = "Possible hardcoded credential assigned to a password/secret/token/key variable"
+# [ \t]* after the separator — NOT \s* — so the value cannot span a newline and
+# capture the next line (that bug matched an empty VAR= against the line below).
+regex = '''(?i)[a-z0-9_.\-]{0,32}(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|credential)[a-z0-9_.\-]{0,32}["']?[ \t]*[:=][ \t]*["']?([^\s"'`,;&\\]{12,120})'''
+secretGroup = 1
+entropy = 3.2
+keywords = ["password", "passwd", "pwd", "secret", "token", "apikey", "api_key", "api-key", "accesskey", "access_key", "credential"]
+
+  # Values that are placeholders, references or redactions — never real secrets.
+  [[rules.allowlists]]
+  regexTarget = "secret"
+  regexes = [
+    '''^\$[\{(]''',                 # ${VAR} or $(command substitution)
+    '''^\$[A-Za-z_]''',             # $VAR
+    '''^[<{\[]''',                  # <your-key>, {{ placeholder }}, [REDACTED]
+    '''^%[A-Za-z_]''',              # %TEMPLATE_VAR%
+    '''[•*]{4,}''',                 # ••••1234 or ****
+    '''^(?:0+|x+|X+|\.+|-+)$''',    # 000000000000, xxxxxxxxxxxx
+    # --- source code, not data ---
+    '''\(''',                       # re.compile(, JSON.stringify(, getenv(
+    '''^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$''',  # import.meta.env.X
+    # A bare identifier with no digits: a type annotation or variable name
+    # (e.g. `password: URLPatternComponentResult`). Known limitation: this also
+    # exempts an all-letter passphrase such as PASSWORD=correcthorsebattery.
+    # Anything containing a digit or symbol is still caught.
+    '''^[A-Za-z_$][A-Za-z_$]*$''',
+  ]
+  stopwords = [
+    "changeme", "change_me", "your", "yours", "example", "sample", "placeholder",
+    "redacted", "removed", "dummy", "insert", "replace", "todo", "fixme",
+    "notreal", "fake", "test", "testing", "default", "none", "null", "empty",
+    "xxxxx", "abcdef", "123456", "secretvalue", "keychain", "security find",
+    "getenv", "process.env", "os.environ", "vault", "lookup",
+  ]
+
+  # Generated and machine-maintained files: type declarations and lockfiles
+  # routinely contain fields literally named password/token/secret.
+  [[rules.allowlists]]
+  paths = [
+    '''\.d\.ts$''',
+    '''(^|/)go\.sum$''',
+    '''(^|/)package-lock\.json$''',
+    '''(^|/)yarn\.lock$''',
+    '''(^|/)pnpm-lock\.yaml$''',
+  ]
+
+[[rules]]
+id = "bearer-token-literal"
+description = "Hardcoded bearer token in an Authorization header or header literal"
+regex = '''(?i)\bbearer\s+([a-z0-9_\-\.=+/]{20,400})'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["bearer"]
+
+  [[rules.allowlists]]
+  regexTarget = "secret"
+  regexes = [
+    '''^\$[\{(]''',
+    '''^\$[A-Za-z_]''',
+    '''^[<{\[]''',
+    '''[•*]{4,}''',
+  ]
+  stopwords = [
+    "your", "example", "placeholder", "redacted", "token_here", "access_token",
+    "changeme", "dummy", "fake", "sample", "insert",
+  ]
+
+[[rules]]
+id = "url-embedded-credential"
+description = "Credential embedded in a connection string or URL (scheme://user:pass@host)"
+regex = '''[a-zA-Z][a-zA-Z0-9+\-.]{1,30}://[^\s:@/]{1,64}:([^\s:@/"']{8,120})@'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["://"]
+
+  [[rules.allowlists]]
+  regexTarget = "secret"
+  regexes = [
+    '''^\$[\{(]''',
+    '''^\$[A-Za-z_]''',
+    '''^[<{\[]''',
+    '''[•*]{4,}''',
+  ]
+  stopwords = [
+    "password", "passwd", "your", "example", "placeholder", "redacted",
+    "changeme", "dummy", "fake", "sample", "token", "insert", "user",
+  ]
+
+# ---------------------------------------------------------------------------
+# Fork-specific addition (CFinne01/schwab-mcp, fork of jkoelker/schwab-mcp).
+# Upstream keeps credential fixtures in its test suite — e.g.
+# tests/test_cli_credentials.py asserts on a dummy client_secret. Those are
+# fixtures, not secrets, and this fork tracks upstream rather than owning them.
+# Scoped to test paths only: application code is still scanned in full.
+# ---------------------------------------------------------------------------
+[[allowlists]]
+description = "Upstream test fixtures and test data"
+paths = [
+  '''(^|/)tests?/''',
+  '''(^|/)testdata/''',
+  '''(^|/)__tests__/''',
+  '''(^|/)fixtures?/''',
+  '''_test\.(py|go|ts|js)$''',
+  '''\.test\.(ts|js|tsx|jsx)$''',
+]
